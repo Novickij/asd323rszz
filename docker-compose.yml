@@ -1,0 +1,81 @@
+version: '3'
+
+volumes:
+  postgres_db_vol:
+  pgadmin-data:
+
+services:
+
+  db_postgres:
+    image: postgres:16.4
+    container_name: postgres_db_container
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_db_vol:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pgadmin:
+    container_name: pgadmin_container
+    image: dpage/pgadmin4:8.6
+    depends_on:
+      - db_postgres
+    env_file:
+      - .env
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    restart: unless-stopped
+
+  vpn_hub_bot:
+    build: ./
+    env_file:
+      - .env
+    environment:
+      - ADMIN_TG_ID
+      - CRYPTO_BOT_API
+      - CRYPTOMUS_KEY
+      - CRYPTOMUS_UUID
+      - LAVA_ID_PROJECT
+      - LAVA_TOKEN_SECRET
+      - NAME
+      - TG_TOKEN
+      - WALLET_PAY_TOKEN
+      - YOOKASSA_SECRET_KEY
+      - YOOKASSA_SHOP_ID
+      - YOOMONEY_TOKEN
+      - YOOMONEY_WALLET
+      - LINK_CHANNEL
+      - ID_CHANNEL
+      - NAME_CHANNEL
+    volumes:
+      - ./logs:/app/logs
+      - ./bot/locale:/app/bot/locale
+      - ./bot/img:/app/bot/img
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    depends_on:
+      - db_postgres
+
+  nginx:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./web:/usr/share/nginx/html
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge

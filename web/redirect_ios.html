@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Перенаправление в V2RayTun</title>
+    <script>
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const deeplink = urlParams.get('deeplink');
+            console.log('Deeplink:', deeplink);
+            if (deeplink) {
+                console.log('Перенаправление на:', deeplink);
+                // Пробуем перенаправить через JavaScript
+                setTimeout(function() {
+                    window.location.href = deeplink;
+                }, 500);
+            } else {
+                console.error('Deeplink не найден в параметрах URL');
+                alert('Ошибка: Deeplink не найден. Пожалуйста, свяжитесь с поддержкой @suppotyspn_bot.');
+            }
+        };
+    </script>
+</head>
+<body>
+    <p>Перенаправление в приложение V2RayTun...</p>
+    <p>Если перенаправление не произошло, <a id="deeplink" href="#">нажмите здесь</a>.</p>
+    <script>
+        // Устанавливаем ссылку для ручного перехода
+        const urlParams = new URLSearchParams(window.location.search);
+        const deeplink = urlParams.get('deeplink');
+        if (deeplink) {
+            document.getElementById('deeplink').href = deeplink;
+        } else {
+            document.getElementById('deeplink').style.display = 'none';
+        }
+    </script>
+</body>
+</html>

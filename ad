@@ -1,0 +1,284 @@
+import logging
+import asyncio
+from bot.misc.language import Localization, get_lang
+from aiogram import exceptions as tg_exceptions
+from bot.database.methods.get import get_person, get_free_servers, get_key_id, get_name_location_server
+from bot.database.methods.insert import add_payment, add_key, update_key_subscription, add_donate, add_referral_balance_person
+from bot.database.methods.update import update_server_key, update_switch_key, server_space_update
+from bot.misc.VPN.ServerManager import ServerManager
+from bot.keyboards.user import user_menu, choose_type_vpn
+from bot.utils.message import Text
+from bot.config import CONFIG
+
+log = logging.getLogger(__name__)
+
+_ = Localization.text
+
+class PaymentSystems:
+    def __init__(self, message, user_id, donate, key_id, price, month_count, id_prot=None, id_loc=None):
+        self.message = message
+        self.user_id = user_id
+        self.TYPE_PAYMENT = donate
+        self.KEY_ID = key_id
+        self.price = price
+        self.month_count = month_count
+        self.ID_PROT = id_prot
+        self.ID_LOC = id_loc
+        log.info(f"payment system: {self.TYPE_PAYMENT}")
+
+    async def successful_payment(self, total_amount, name_payment, id_payment=None):
+        log.info(f"Processing successful payment for user {self.user_id}, payment_id={id_payment}")
+        from bot.database.methods.get import get_payment_by_id
+        if id_payment:
+            # M-^OM-pM-nM-bM-eM-pM-_M-eM-l M-dM-n 3 M-pM-`M-g M-q M-oM-`M-sM-gM-nM-i, M-wM-rM-nM-aM-{ M-dM-nM-fM-dM-`M-rM-|M-qM-_ M-gM-`M-oM-hM-qM-h M-b M-aM-`M-gM-s
+            for _ in range(3):
+                payment = await get_payment_by_id(id_payment)
+                if payment:
+                    log.info(f"Payment {id_payment} already processed for user {self.user_id}")
+                    return
+                log.debug(f"Payment {id_payment} not found yet, retrying...")
+                await asyncio.sleep(0.5)
+
+        log.info(
+            f'user ID: {self.user_id} '
+            f'success payment {total_amount} RUB '
+            f'Payment - {name_payment} '
+            f'Type payment {self.TYPE_PAYMENT}'
+        )
+        lang_user = await get_lang(self.user_id)
+        log.debug(f"Adding payment to DB for user {self.user_id}, id_payment={id_payment}")
+        await add_payment(
+            self.user_id,
+            total_amount,
+            name_payment,
+            id_payment=id_payment,
+            month_count=self.month_count
+        )
+        # M-^NM-oM-pM-eM-dM-eM-kM-_M-eM-l M-tM-`M-jM-rM-hM-wM-eM-qM-jM-nM-e M-jM-nM-kM-hM-wM-eM-qM-rM-bM-n M-lM-eM-qM-_M-vM-eM-b M-q M-sM-wM-^M-rM-nM-l M-aM-nM-mM-sM-qM-nM-b
+        if self.month_count == 6:
+            effective_months = 7  # 6 M-lM-eM-qM-_M-vM-eM-b > 7 M-lM-eM-qM-_M-vM-eM-b
+            bonus_message = _("bonus_months", lang_user).format(bonus=1)
+        elif self.month_count == 12:
+            effective_months = 15  # 12 M-lM-eM-qM-_M-vM-eM-b > 15 M-lM-eM-qM-_M-vM-eM-b
+            bonus_message = _("bonus_months", lang_user).format(bonus=3)
+        else:
+            effective_months = self.month_count
+            bonus_message = ""
+        # M-^PM-`M-qM-qM-wM-hM-rM-{M-bM-`M-eM-l M-dM-kM-hM-rM-eM-kM-|M-mM-nM-qM-rM-| M-oM-nM-dM-oM-hM-qM-jM-h M-b M-qM-eM-jM-sM-mM-dM-`M-u
+        subscription_seconds = effective_months * CONFIG.COUNT_SECOND_MOTH
+        if self.TYPE_PAYMENT == CONFIG.type_payment.get(0):
+            person = await get_person(self.user_id)
+            try:
+                locations = await get_free_servers(person.group, self.ID_PROT)
+                if not locations:
+                    raise FileNotFoundError("No available servers")
+                server = locations[0].vds[0].servers[0]  # M-^AM-eM-pM-^M-l M-oM-eM-pM-bM-{M-i M-dM-nM-qM-rM-sM-oM-mM-{M-i M-qM-eM-pM-bM-eM-p
+            except FileNotFoundError:
+                log.info(f"No free servers for user {self.user_id} group {person.group} type_vpn {self.ID_PROT}")
+                await self.message.bot.send_message(
+                    self.user_id,
+                    _("not_server", lang_user)
+                )
+                return
+            log.debug(f"Adding key to DB for user {self.user_id}, server_id={server.id}, id_payment={id_payment}")
+            try:
+                key = await add_key(
+                    telegram_id=person.tgid,
+                    subscription=subscription_seconds,
+                    server_id=server.id,
+                    id_payment=id_payment
+                )
+                log.info(f"Key created for user {self.user_id}, key_id={key.id}, id_payment={id_payment}")
+            except Exception as e:
+                log.error(f"Failed to add key to DB for user {self.user_id}: {e}")
+                await self.message.bot.send_message(
+                    self.user_id,
+                    _("error_send_admin", lang_user)
+                )
+                return
+            try:
+                await self.message.answer(
+                    _('payment_success', lang_user)
+                    .format(total_month=effective_months, bonus=bonus_message)
+                )
+                download = await self.message.answer(
+                    _('download', lang_user)
+                )
+                key = await get_key_id(key.id)
+                server_manager = ServerManager(key.server_table)
+                await server_manager.login()
+                log.debug(f"Adding client to VPN server for user {self.user_id}, key_id={key.id}")
+                if await server_manager.add_client(
+                        self.user_id, key.id
+                ) is None:
+                    raise Exception('user/main.py add client error')
+                name_location = await get_name_location_server(
+                    key.server_table.id
+                )
+                log.debug(f"Getting VPN key for user {self.user_id}, name_location={name_location}")
+                config = await server_manager.get_key(
+                    self.user_id,
+                    name_key=name_location,
+                    key_id=key.id
+                )
+                server_parameters = await server_manager.get_all_user()
+                await server_space_update(
+                    server.id,
+                    len(server_parameters)
+                )
+                await download.delete()
+                await post_key_telegram(self.message, key, config, lang_user)
+            except Exception as e:
+                await update_server_key(key.id)
+                await self.message.answer(
+                    _('server_not_connected', lang_user)
+                )
+                log.error(f"Failed to create key for user {self.user_id}: {e}")
+                return
+            text = Text(
+                _('admin_message_payment_success', CONFIG.languages)
+                .format(
+                    username=person.username,
+                    user_id=self.user_id,
+                    month_count=effective_months,
+                    price=self.price
+                )
+            )
+            for admin_id in CONFIG.admin_tg_ids:
+                try:
+                    await self.message.bot.send_message(
+                        admin_id,
+                        **text.as_kwargs()
+                    )
+                except tg_exceptions.TelegramBadRequest as e:
+                    log.warning(f"Failed to send message to admin {admin_id}: {e}")
+        elif self.TYPE_PAYMENT == CONFIG.type_payment.get(1):
+            person = await get_person(self.user_id)
+            try:
+                key = await update_key_subscription(
+                    key_id=int(self.KEY_ID),
+                    subscription_seconds=subscription_seconds,
+                    id_payment=id_payment
+                )
+                if not key:
+                    log.error(f"Failed to extend key for user {self.user_id}, key_id={self.KEY_ID}")
+                    await self.message.bot.send_message(
+                        self.user_id,
+                        _("error_send_admin", lang_user)
+                    )
+                    return
+                log.info(f"Extended key for user {self.user_id}, key_id={self.KEY_ID}, id_payment={id_payment}")
+            except Exception as e:
+                log.error(f"Failed to extend key for user {self.user_id}: {e}")
+                await self.message.bot.send_message(
+                    self.user_id,
+                    _("error_send_admin", lang_user)
+                )
+                return
+            await self.message.answer(
+                _('payment_success_extend', lang_user)
+                .format(total_month=effective_months, bonus=bonus_message)
+            )
+            text = Text(
+                _('admin_message_payment_success', CONFIG.languages)
+                .format(
+                    username=person.username,
+                    user_id=self.user_id,
+                    month_count=effective_months,
+                    price=self.price
+                )
+            )
+            for admin_id in CONFIG.admin_tg_ids:
+                try:
+                    await self.message.bot.send_message(
+                        admin_id,
+                        **text.as_kwargs()
+                    )
+                except tg_exceptions.TelegramBadRequest as e:
+                    log.warning(f"Failed to send message to admin {admin_id}: {e}")
+            await self.message.answer(
+                text=_('main_menu', lang_user),
+                reply_markup=await user_menu(lang_user, person.tgid)
+            )
+            return
+        elif self.TYPE_PAYMENT == CONFIG.type_payment.get(2):
+            person = await get_person(self.user_id)
+            await add_donate(person.username, self.price)
+            await self.message.answer(
+                _('donate_successful', lang_user)
+            )
+            text = Text(
+                _('admin_message_payment_success_donate', CONFIG.languages)
+                .format(
+                    username=person.username,
+                    user_id=self.user_id,
+                    price=self.price
+                )
+            )
+            for admin_id in CONFIG.admin_tg_ids:
+                try:
+                    await self.message.bot.send_message(
+                        admin_id,
+                        **text.as_kwargs()
+                    )
+                except tg_exceptions.TelegramBadRequest as e:
+                    log.warning(f"Failed to send message to admin {admin_id}: {e}")
+            await self.message.answer(
+                text=_('main_menu', lang_user),
+                reply_markup=await user_menu(lang_user, person.tgid)
+            )
+            return
+        elif self.TYPE_PAYMENT == CONFIG.type_payment.get(3):
+            person = await get_person(self.user_id)
+            await update_switch_key(self.KEY_ID, True)
+            await self.message.answer(
+                _('payment_success_switch', lang_user),
+            )
+            await self.message.answer(
+                text=_('choosing_connect_type', lang_user),
+                reply_markup=await choose_type_vpn(
+                    key_id=self.KEY_ID,
+                    lang=lang_user,
+                    back_data='back_general_menu_btn'
+                )
+            )
+            text = Text(
+                _('admin_message_payment_success_switch', CONFIG.languages)
+                .format(
+                    username=person.username,
+                    user_id=self.user_id,
+                    price=self.price
+                )
+            )
+            for admin_id in CONFIG.admin_tg_ids:
+                try:
+                    await self.message.bot.send_message(
+                        admin_id,
+                        **text.as_kwargs()
+                    )
+                except tg_exceptions.TelegramBadRequest as e:
+                    log.warning(f"Failed to send message to admin {admin_id}: {e}")
+            return
+        else:
+            log.error(f'type payment {self.TYPE_PAYMENT} not found')
+            await self.message.bot.send_message(
+                self.user_id,
+                _('error_send_admin', lang_user)
+            )
+            return
+        person = await get_person(self.user_id)
+        if person.referral_user_tgid is not None:
+            referral_user = person.referral_user_tgid
+            referral_balance = (
+                int(total_amount * (CONFIG.referral_percent * 0.01))
+            )
+            await add_referral_balance_person(
+                referral_balance,
+                referral_user
+            )
+            await self.message.bot.send_message(
+                referral_user,
+                _('reff_add_balance', await get_lang(referral_user)).format(
+                    referral_balance=referral_balance
+                )
+            )
